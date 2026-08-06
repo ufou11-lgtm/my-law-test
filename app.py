@@ -132,6 +132,13 @@ def find_byeonpyo(detail_root: dict, keyword: str):
     return results
 
 
+def hide_key(text: str) -> str:
+    """에러 메시지에 API 키 값이 그대로 노출되지 않도록 가려줍니다."""
+    if API_KEY:
+        text = text.replace(API_KEY, "********")
+    return text
+
+
 if st.button("법령 및 행정규칙 통합 검색하기"):
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
@@ -148,7 +155,7 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                 try:
                     data = search_list(search_keyword, t["code"])
                 except Exception as e:
-                    st.error(f"{t['label']} 검색 중 오류가 발생했습니다: {e}")
+                    st.error(f"{t['label']} 검색 중 오류가 발생했습니다: {hide_key(str(e))}")
                     continue
 
                 items = []
@@ -176,7 +183,7 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                     try:
                         detail_data = fetch_detail(item_id, t["code"])
                     except Exception as e:
-                        st.warning(f"'{item_name}' 상세 조회 중 오류가 발생했습니다: {e}")
+                        st.warning(f"'{item_name}' 상세 조회 중 오류가 발생했습니다: {hide_key(str(e))}")
                         continue
 
                     found_texts = []
