@@ -25,13 +25,17 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
             total_found_count = 0
             
             for t in targets:
+                # 👉 [핵심] 바로 이 줄이 지워졌거나 띄어쓰기가 틀어져서 났던 에러입니다!
+                search_url = "https://www.law.go.kr/DRF/lawSearch.do"
+                
                 search_params = {
                     "OC": API_KEY,
                     "target": t["code"],
                     "type": "JSON",
                     "query": search_keyword,
-                    "search": "2"  # 👈 [추가된 부분] '제목'이 아닌 '본문'에서 검색하라는 마법의 옵션!
+                    "search": "2"  # 본문 검색 마법의 옵션
                 }
+                
                 try:
                     response = requests.get(search_url, params=search_params)
                     if response.status_code == 200:
