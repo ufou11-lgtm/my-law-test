@@ -1,30 +1,16 @@
 import os
 import streamlit as st
 import requests
+import re
 
-# -----------------------------------------------------------------------
-# ⚠️ API 키는 코드에 직접 적지 않습니다.
-# "OC_KEY"는 이름표(key)이고, 실제 발급받은 키 값은 아래 두 곳 중
-# 한 곳에 값으로만 넣어두면 됩니다. 이름표 자리에 실제 키 값을 넣지 마세요!
-#
-# 1) Google Cloud Run 배포: Cloud Run 콘솔 > 서비스 편집 및 새 버전 배포 >
-#    "변수 및 보안 비밀" 탭 > 환경 변수 추가
-#      이름: OC_KEY   값: 실제_발급받은_API_키
-# 2) 로컬 실행: 이 파일과 같은 폴더에 .streamlit/secrets.toml 파일을 만들고
-#      OC_KEY = "실제_발급받은_API_키"
-#    라고 한 줄 적어두세요. (.gitignore에 .streamlit/secrets.toml 꼭 추가!)
-# -----------------------------------------------------------------------
 def load_api_key():
-    # 1순위: 환경변수 (Cloud Run 등 서버 배포 환경)
     key = os.environ.get("OC_KEY")
     if key:
         return key
-    # 2순위: secrets.toml (로컬 개발 환경)
     try:
         return st.secrets["OC_KEY"]
     except Exception:
         return None
-
 
 API_KEY = load_api_key()
 if not API_KEY:
@@ -35,7 +21,7 @@ if not API_KEY:
     )
     st.stop()
 
-REQUEST_TIMEOUT = 10  # 초. API가 응답 없이 멈추는 것을 방지
+REQUEST_TIMEOUT = 10
 
 st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️")
 st.title("⚖️ 스마트 법규 검토 시스템 (통합 검색)")
@@ -46,31 +32,28 @@ st.caption("⚠️ 참고: '단열재 두께'처럼 구체적인 수치 기준�
 search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 단열재, 건축물 에너지, 주차장)")
 show_debug = st.checkbox(
     "🔧 원본 응답 구조 보기 (별표 필드 이름을 확인하고 싶을 때 체크)",
-    help="법제처 API가 실제로 어떤 이름으로 별표 정보를 주는지 확인하는 용도입니다. "
-         "평소 검색할 땐 체크하지 않아도 됩니다.",
+    help="법제처 API가 실제로 어떤 이름으로 별표 정보를 주는지 확인하는 용도입니다.",
 )
-
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def search_list(keyword: str, target_code: str):
-    """1단계: 키워드로 법령/행정규칙 목록 검색 (결과를 1시간 캐시)"""
     url = "https://www.law.go.kr/DRF/lawSearch.do"
     params = {
         "OC": API_KEY,
         "target": target_code,
         "type": "JSON",
         "query": keyword,
-        "search": "2",  # 1=제목만 검색, 2=제목+본문 내용까지 검색
+        "search": "2",  # 본문 내용까지 포함해서 검색
     }
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
-
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_detail(item_id: str, target_code: str):
-    """2단계: 개별 법령/행정규칙의 조문 본문 조회 (결과를 1시간 캐시)"""
+def fetch_detail(item_id: str, target_code: str, link_url: str = ""):
     url = "https://www.law.go.kr/DRF/lawService.do"
+    
+    # 1차 시도: 기본 일련번호(ID)로 요청
     params = {
         "OC": API_KEY,
         "target": target_code,
@@ -79,19 +62,23 @@ def fetch_detail(item_id: str, target_code: str):
     }
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    return resp.json()
-
+    data = resp.json()
+    
+    # 만약 "일치하는 법령이 없습니다" 에러가 나고 링크가 있다면, 링크 안의 MST 번호를 추출해서 재시도
+    root_key = "Law" if target_code == "law" else "Admrul"
+    if root_key in data and isinstance(data[root_key], str) and "일치하는 법령이 없습니다" in data[root_key]:
+        if link_url:
+            match = re.search(r'MST=(\d+)', link_url)
+            if match:
+                mst_val = match.group(1)
+                params["ID"] = mst_val
+                resp2 = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
+                resp2.raise_for_status()
+                return resp2.json()
+                
+    return data
 
 def find_byeonpyo(detail_root: dict, keyword: str):
-    """
-    상세조회 결과(detail_root)에서 별표 블록을 찾아, 제목이 검색어와
-    관련있는 별표만 골라 PDF/HWP 다운로드 링크와 함께 돌려줍니다.
-
-    ⚠️ 법제처 API의 실제 JSON 필드 이름이 다를 수 있습니다.
-    화면에서 '원본 응답 구조 보기'를 체크해 실제 키 이름을 확인한 뒤,
-    아래 byeonpyo_candidates / title_keys 목록을 맞는 이름으로
-    바꿔주시면 정확도가 올라갑니다.
-    """
     byeonpyo_candidates = ["별표단위", "별표서식", "별표", "byeonpyo"]
     byeonpyo_list = None
     for key in byeonpyo_candidates:
@@ -105,8 +92,6 @@ def find_byeonpyo(detail_root: dict, keyword: str):
     if isinstance(byeonpyo_list, dict):
         byeonpyo_list = [byeonpyo_list]
 
-    # 검색어를 단어 단위로 쪼개서, 그중 하나라도 별표 제목에 포함되면 매칭
-    # (예: "단열재 두께"로 검색해도 별표 제목이 "...단열재의 두께..."면 잡히도록)
     tokens = [tok for tok in keyword.split() if len(tok) >= 2]
 
     results = []
@@ -131,13 +116,10 @@ def find_byeonpyo(detail_root: dict, keyword: str):
 
     return results
 
-
 def hide_key(text: str) -> str:
-    """에러 메시지에 API 키 값이 그대로 노출되지 않도록 가려줍니다."""
     if API_KEY:
         text = text.replace(API_KEY, "********")
     return text
-
 
 if st.button("법령 및 행정규칙 통합 검색하기"):
     if not search_keyword:
@@ -170,7 +152,6 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
 
                 st.markdown(f"### 📂 관련 {t['label']} 분석 결과")
 
-                # 상위 5개 문서만 본문을 확인 (너무 많으면 느려짐)
                 for item in items[:5]:
                     item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
                     item_id = item.get("법령일련번호") or item.get("행정규칙일련번호") or ""
@@ -179,9 +160,8 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                     if not item_id:
                         continue
 
-                    # ⚠️ 항목별로 try/except를 걸어서, 하나가 실패해도 나머지는 계속 진행됩니다.
                     try:
-                        detail_data = fetch_detail(item_id, t["code"])
+                        detail_data = fetch_detail(item_id, t["code"], item_link)
                     except Exception as e:
                         st.warning(f"'{item_name}' 상세 조회 중 오류가 발생했습니다: {hide_key(str(e))}")
                         continue
@@ -193,6 +173,10 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                         with st.expander(f"🔧 [디버그] {item_name} 원본 응답 구조", expanded=False):
                             st.json(detail_data)
 
+                    # API가 에러 문자열을 보낸 경우 건너뜁니다.
+                    if isinstance(detail_root, str):
+                        continue
+
                     if "Jo" in detail_root:
                         jo_list = detail_root["Jo"]
                         if isinstance(jo_list, dict):
@@ -203,7 +187,6 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                             if search_keyword in jo_content:
                                 found_texts.append(jo_content)
 
-                    # 조문 본문뿐 아니라, 별표(첨부표) 제목도 함께 확인
                     byeonpyo_matches = find_byeonpyo(detail_root, search_keyword)
 
                     if found_texts or byeonpyo_matches:
