@@ -32,7 +32,6 @@ search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건
 @st.cache_data(show_spinner=False, ttl=3600)
 def search_list(keyword: str, target_code: str):
     url = "https://www.law.go.kr/DRF/lawSearch.do"
-    # 키워드 검색 시 유연하게 찾기 위해 핵심 단어(예: 건폐율 -> 건폐율, 단열재의 두께 -> 단열재)로도 동시 검색 지원
     params = {
         "OC": API_KEY,
         "target": target_code,
@@ -70,7 +69,6 @@ def fetch_detail(item_id: str, target_code: str, link_url: str = ""):
     return data
 
 def find_byeonpyo(detail_root: dict, keyword: str):
-    # 법제처 API 응답 구조에서 별표 데이터를 담고 있는 후보 키들
     byeonpyo_candidates = ["별표단위", "별표서식", "별표", "byeonpyo"]
     byeonpyo_list = None
     for key in byeonpyo_candidates:
@@ -84,7 +82,6 @@ def find_byeonpyo(detail_root: dict, keyword: str):
     if isinstance(byeonpyo_list, dict):
         byeonpyo_list = [byeonpyo_list]
 
-    # 검색어에서 핵심 단어 추출 (예: "단열재의 두께" -> "단열재")
     clean_keyword = keyword.replace("의", "").replace(" ", "")
     tokens = [tok for tok in keyword.split() if len(tok) >= 2]
 
@@ -99,7 +96,6 @@ def find_byeonpyo(detail_root: dict, keyword: str):
         if not title:
             continue
 
-        # 별표 제목에 검색어나 핵심 토큰이 포함되어 있는지 확인
         title_no_space = title.replace(" ", "")
         if keyword in title or clean_keyword in title_no_space or any(tok in title for tok in tokens):
             pdf_path = item.get("별표서식PDF파일링크")
@@ -116,7 +112,6 @@ if st.button("법령 및 별표 통합 검색하기"):
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
     else:
-        # 단열재 같은 고시류는 'admrul(행정규칙)', 건폐율 같은 법은 'law(법령)'에서 주로 나옵니다.
         targets = [
             {"code": "law", "label": "법령", "detail_key": "Law"},
             {"code": "admrul", "label": "행정규칙 (고시/지침)", "detail_key": "Admrul"},
@@ -124,7 +119,6 @@ if st.button("법령 및 별표 통합 검색하기"):
 
         total_found_count = 0
 
-        # 만약 사용자가 '단열재'나 '건폐율'을 쳤을 때, 관련 핵심 법령이 무조건 검색되도록 보조 검색어 리스트 구성
         search_queries = [search_keyword]
         if "단열재" in search_keyword:
             search_queries.extend(["건축물의 에너지절약설계기준", "에너지절약"])
@@ -135,7 +129,6 @@ if st.button("법령 및 별표 통합 검색하기"):
             for t in targets:
                 collected_items = {}
                 
-                # 여러 보조 검색어로 중복 없이 목록 수집
                 for q in search_queries:
                     try:
                         data = search_list(q, t["code"])
@@ -157,7 +150,6 @@ if st.button("법령 및 별표 통합 검색하기"):
                 if not collected_items:
                     continue
 
-                # 상위 10개 문서만 상세 본문 및 별표 조사
                 for item_id, item in list(collected_items.items()[:10]):
                     item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
                     item_link = item.get("법령상세링크") or item.get("행정규칙상세링크") or ""
@@ -172,7 +164,6 @@ if st.button("법령 및 별표 통합 검색하기"):
                         continue
 
                     found_articles = []
-                    # 1. 조문 내용 검색 (예: 건폐율)
                     if "Jo" in detail_root:
                         jo_list = detail_root["Jo"]
                         if isinstance(jo_list, dict):
@@ -183,7 +174,6 @@ if st.button("법령 및 별표 통합 검색하기"):
                             jo_no = jo.get("조문번호", "")
                             jo_title = jo.get("조문제목", "")
                             
-                            # 검색어가 조문 내용이나 제목에 포함된 경우
                             if search_keyword in jo_content or search_keyword in jo_title or any(tok in jo_content for tok in search_keyword.split()):
                                 found_articles.append({
                                     "no": jo_no,
@@ -191,24 +181,20 @@ if st.button("법령 및 별표 통합 검색하기"):
                                     "content": jo_content
                                 })
 
-                    # 2. 별표(첨부표) 제목 검색 (예: 단열재의 두께)
                     byeonpyo_matches = find_byeonpyo(detail_root, search_keyword)
 
-                    # 조문이나 별표 중 하나라도 매칭되면 화면에 출력!
                     if found_articles or byeonpyo_matches:
                         total_found_count += 1
                         with st.expander(f"📌 [{t['label']}] {item_name}", expanded=True):
                             
-                            # 조문 결과 출력
                             if found_articles:
                                 st.markdown("**📜 관련 법 조문**")
-                                for art in found_articles[:3]:  # 너무 길지 않게 상위 3개만
+                                for art in found_articles[:3]:
                                     st.markdown(f"**제{art['no']}조({art['title']})**")
                                     highlighted = art['content'].replace(search_keyword, f"**{search_keyword}**")
                                     st.markdown(f"> {highlighted}")
                                     st.markdown("---")
 
-                            # 별표 결과 출력 (단열재의 두께 등)
                             if byeonpyo_matches:
                                 st.markdown("**📎 관련 별표(첨부표)**")
                                 for bp in byeonpyo_matches:
@@ -225,4 +211,4 @@ if st.button("법령 및 별표 통합 검색하기"):
         if total_found_count == 0:
             st.info(f"'{search_keyword}'과(와) 일치하는 조문이나 별표를 찾지 못했습니다. 단어를 조금 더 단순하게(예: '건폐율', '단열재') 입력해 보세요.")
         else:
-            st.success(f"✅ 총 {total_found_count개의 관련 문서를 찾아냈습니다!")
+            st.success(f"✅ 총 {total_found_count}개의 관련 문서를 찾아냈습니다!")
