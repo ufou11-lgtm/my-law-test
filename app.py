@@ -33,7 +33,7 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
                     "target": t["code"],
                     "type": "JSON",
                     "query": search_keyword,
-                    "search": "2"  # 본문 검색 마법의 옵션
+                    "search": "1"  # 본문 검색 마법의 옵션
                 }
                 
                 try:
