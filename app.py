@@ -24,8 +24,8 @@ if not API_KEY:
 REQUEST_TIMEOUT = 10
 
 st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️")
-st.title("⚖️ 스마트 법규 검토 시스템 (조문 + 별표 통합 검색)")
-st.markdown("키워드를 입력하면 법 조문 본문뿐만 아니라, **'단열재의 두께'** 같은 세부 기준이 담긴 **별표(첨부표)**까지 찾아내어 보여줍니다.")
+st.title("⚖️ 스마트 법규 검토 시스템 (실무형 통합 검색)")
+st.markdown("건축 용어(건폐율, 단열재, 주차장 등)를 입력하면, 알아서 관련 법령과 행정규칙을 찾아 **조문 내용과 별표**를 보여줍니다.")
 
 search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건폐율, 단열재의 두께, 주차장)")
 
@@ -119,13 +119,21 @@ if st.button("법령 및 별표 통합 검색하기"):
 
         total_found_count = 0
 
+        # 💡 [핵심 해결책] API가 법 이름을 검색해야 하므로, 사용자가 입력한 용어에 맞춰 핵심 법령명을 자동으로 매핑합니다!
         search_queries = [search_keyword]
-        if "단열재" in search_keyword:
-            search_queries.extend(["건축물의 에너지절약설계기준", "에너지절약"])
-        elif "건폐율" in search_keyword:
+        
+        # 건축 실무 주요 키워드 자동 매핑
+        if "건폐율" in search_keyword or "용적률" in search_keyword:
             search_queries.extend(["건축법", "국토의 계획 및 이용에 관한 법률"])
+        elif "단열재" in search_keyword:
+            search_queries.extend(["건축물의 에너지절약설계기준", "건축법 시행령"])
+        elif "주차장" in search_keyword:
+            search_queries.extend(["주차장법", "주차장법 시행규칙"])
+        else:
+            # 일반적인 경우 건축법을 기본으로 함께 검색
+            search_queries.extend(["건축법"])
 
-        with st.spinner(f"'{search_keyword}' 관련 조문과 별표(첨부표)를 분석 중입니다..."):
+        with st.spinner(f"'{search_keyword}' 관련 법 조문과 별표를 분석 중입니다..."):
             for t in targets:
                 collected_items = {}
                 
@@ -150,7 +158,6 @@ if st.button("법령 및 별표 통합 검색하기"):
                 if not collected_items:
                     continue
 
-                # 💡 수정된 부분: list()로 감싼 뒤에 슬라이싱([:10])을 하도록 변경 완료
                 for item_id, item in list(collected_items.items())[:10]:
                     item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
                     item_link = item.get("법령상세링크") or item.get("행정규칙상세링크") or ""
@@ -175,7 +182,10 @@ if st.button("법령 및 별표 통합 검색하기"):
                             jo_no = jo.get("조문번호", "")
                             jo_title = jo.get("조문제목", "")
                             
-                            if search_keyword in jo_content or search_keyword in jo_title or any(tok in jo_content for tok in search_keyword.split()):
+                            # 사용자가 입력한 핵심 단어가 조문 내용이나 제목에 포함된 경우 추출
+                            # (예: '건폐율' 입력 시 건폐율이 포함된 조문만 쏙쏙 골라냄)
+                            main_word = search_keyword.split()[0] # 첫 단어 기준 (예: 단열재의 두께 -> 단열재)
+                            if main_word in jo_content or main_word in jo_title or search_keyword in jo_content:
                                 found_articles.append({
                                     "no": jo_no,
                                     "title": jo_title,
