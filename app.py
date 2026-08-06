@@ -25,14 +25,13 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
             total_found_count = 0
             
             for t in targets:
-                search_url = "https://www.law.go.kr/DRF/lawSearch.do"
-                search_params = {
+            search_params = {
                     "OC": API_KEY,
                     "target": t["code"],
                     "type": "JSON",
-                    "query": search_keyword
+                    "query": search_keyword,
+                    "search": "2"  # 
                 }
-                
                 try:
                     response = requests.get(search_url, params=search_params)
                     if response.status_code == 200:
