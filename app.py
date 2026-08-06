@@ -20,8 +20,6 @@ if st.button("법령 검색하기"):
     
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
-    elif API_KEY == "whdbswn963":
-        st.error("코드 상단의 API_KEY 변수에 발급받은 API 키를 넣어주세요.")
     else:
         # 3. 로딩 애니메이션 (돌아가는 동그라미) 보여주기
         with st.spinner("국가법령정보센터에서 데이터를 가져오는 중입니다..."):
