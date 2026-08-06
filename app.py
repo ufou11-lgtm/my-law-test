@@ -25,12 +25,12 @@ if st.button("법령 및 행정규칙 통합 검색하기"):
             total_found_count = 0
             
             for t in targets:
-            search_params = {
+                search_params = {
                     "OC": API_KEY,
                     "target": t["code"],
                     "type": "JSON",
                     "query": search_keyword,
-                    "search": "2"  # 
+                    "search": "2"  # 👈 [추가된 부분] '제목'이 아닌 '본문'에서 검색하라는 마법의 옵션!
                 }
                 try:
                     response = requests.get(search_url, params=search_params)
