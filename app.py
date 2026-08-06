@@ -60,7 +60,7 @@ def search_list(keyword: str, target_code: str):
         "target": target_code,
         "type": "JSON",
         "query": keyword,
-        "search": "1",
+        "search": "2",  # 1=제목만 검색, 2=제목+본문 내용까지 검색
     }
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
