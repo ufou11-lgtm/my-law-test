@@ -150,7 +150,8 @@ if st.button("법령 및 별표 통합 검색하기"):
                 if not collected_items:
                     continue
 
-                for item_id, item in list(collected_items.items()[:10]):
+                # 💡 수정된 부분: list()로 감싼 뒤에 슬라이싱([:10])을 하도록 변경 완료
+                for item_id, item in list(collected_items.items())[:10]:
                     item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
                     item_link = item.get("법령상세링크") or item.get("행정규칙상세링크") or ""
 
