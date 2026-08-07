@@ -26,7 +26,7 @@ st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="�
 st.title("⚖️ 스마트 법규 검토 시스템 (실무형 통합 검색)")
 st.markdown("건축 용어(**건폐율, 단열재, 주차장** 등)를 입력하고 **엔터(Enter)**를 누르거나 버튼을 클릭하세요.")
 
-# 핵심 법령 매핑 사전 (녹색건축물법 등 실무에 필요한 내용 추가)
+# 핵심 법령 매핑 사전
 KEYWORD_TO_LAW_MAP = {
     "단열": ["건축물의 에너지절약설계기준", "건축법 시행령", "건축법", "녹색건축물 조성 지원법"],
     "건폐": ["건축법", "국토의 계획 및 이용에 관한 법률"],
@@ -45,20 +45,11 @@ def search_list(law_name: str, target_code: str):
     return resp.json()
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_detail(item_link: str, target_code: str):
+def fetch_detail(item_id: str, target_code: str):
+    """💡 [해결 핵심] 복잡한 URL 파싱을 버리고, 가장 안전한 일련번호(ID)를 직접 넘겨받아 요청합니다."""
     url = "https://www.law.go.kr/DRF/lawService.do"
-    params = {"OC": API_KEY, "target": target_code, "type": "JSON"}
+    params = {"OC": API_KEY, "target": target_code, "type": "JSON", "ID": item_id}
     
-    match_mst = re.search(r'MST=(\d+)', item_link)
-    match_id = re.search(r'ID=(\d+)', item_link)
-    
-    if match_mst:
-        params["MST"] = match_mst.group(1)
-    elif match_id:
-        params["ID"] = match_id.group(1)
-    else:
-        return {}
-
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     if resp.status_code != 200:
         return {}
@@ -70,7 +61,7 @@ def ensure_list(data):
     return data
 
 def find_byeonpyo(detail_root: dict, search_tokens: list):
-    byl_data = detail_root.get("Byl") or detail_root.get("byl") or []
+    byl_data = detail_root.get("Byl") or detail_root.get("byl") or detail_root.get("별표") or []
     byl_list = ensure_list(byl_data)
 
     results = []
@@ -90,12 +81,10 @@ def find_byeonpyo(detail_root: dict, search_tokens: list):
             })
     return results
 
-# 💡 [해결 포인트 1] 엔터키를 감지하는 Form(폼) 구역 설정
 with st.form(key="search_form"):
     search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 단열재 두께, 건폐율 확인)")
     submit_button = st.form_submit_button("🔍 법령 및 별표 통합 검색하기")
 
-# 사용자가 엔터를 치거나 버튼을 눌렀을 때만 아래 로직 실행
 if submit_button:
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
@@ -117,7 +106,6 @@ if submit_button:
         total_found_count = 0
         search_tokens = search_keyword.split()
         
-        # 💡 [안내 메시지] 현재 어떤 법령과 통신하고 있는지 화면에 띄워줍니다.
         st.info(f"⚙️ 시스템이 다음 규칙과 법령을 검토 중입니다: **{', '.join(laws_to_search)}**")
 
         with st.spinner(f"'{search_keyword}' 관련 법령(문서)을 분석 중입니다..."):
@@ -128,28 +116,32 @@ if submit_button:
                     except Exception:
                         continue
 
-                    search_root = {}
-                    # 💡 [해결 포인트 2] 일반 법령과 행정규칙의 JSON 상자 이름이 다른 현상 해결!
-                    if t["code"] == "law":
-                        search_root = list_data.get("LawSearch", {})
-                        items = ensure_list(search_root.get("law", []))
-                    else:
-                        search_root = list_data.get("AdmrulSearch", {}) # 이 부분이 빠져있었습니다!
-                        items = ensure_list(search_root.get("admrul", []))
+                    # 💡 [해결 핵심] API가 LawSearch를 주든 AdmRulSearch를 주든 무시하고, 첫 번째 값을 강제로 엽니다.
+                    if not list_data or not isinstance(list_data, dict):
+                        continue
+                        
+                    search_root = list(list_data.values())[0] if list_data.values() else {}
+                    items = ensure_list(search_root.get(t["code"], []))
 
                     for item in items:
-                        item_link = item.get("법령상세링크") or item.get("행정규칙상세링크")
+                        # 💡 [해결 핵심] 여기서 추출한 확실한 ID 값을 상세조회 함수(fetch_detail)로 넘겨줍니다.
+                        item_id = item.get("법령일련번호") or item.get("행정규칙일련번호")
                         item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
+                        item_link = item.get("법령상세링크") or item.get("행정규칙상세링크")
 
-                        if not item_link:
+                        if not item_id:
                             continue
 
                         try:
-                            detail_data = fetch_detail(item_link, t["code"])
+                            detail_data = fetch_detail(item_id, t["code"])
                         except Exception:
                             continue
                         
-                        detail_root = detail_data.get("Law") or detail_data.get("Admrul") or detail_data.get("admrul") or {}
+                        # 💡 [해결 핵심] 상세조회 데이터 역시 키 이름 무시하고 무조건 알맹이를 꺼냅니다.
+                        if not detail_data or not isinstance(detail_data, dict):
+                            continue
+                            
+                        detail_root = list(detail_data.values())[0] if detail_data.values() else {}
                         if not isinstance(detail_root, dict):
                             continue
 
