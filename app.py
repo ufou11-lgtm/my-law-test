@@ -26,7 +26,7 @@ REQUEST_TIMEOUT = 15
 
 st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️", layout="wide")
 st.title("⚖️ 스마트 법규 검토 시스템 (실무형 통합 검색)")
-st.markdown("건축 용어(**건폐율, 용적률, 단열재의 두께** 등)를 입력하고 **엔터(Enter)**를 누르세요. 연계된 법령과 별표 PDF를 한 번에 찾아 띄워줍니다.")
+st.markdown("건축 용어(**건폐율, 용적률, 단열재 두께** 등)를 입력하고 **엔터(Enter)**를 누르세요. 연계된 법령과 별표 PDF를 한 번에 찾아 띄워줍니다.")
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_api_json(url, params):
@@ -53,37 +53,41 @@ def ensure_list(data):
     if isinstance(data, dict): return [data]
     return data
 
-# 💡 [핵심 해결 로직] 조문 안쪽에 숨어있는 '항(Hang)', '호(Ho)', '목(Mok)' 데이터를 모조리 긁어오는 함수
+# 💡 [핵심 해결 로직 1] API가 리스트를 던지든 딕셔너리를 던지든 무조건 안전한 텍스트로 바꿔주는 마법의 함수
+def safe_str(val):
+    if not val: return ""
+    if isinstance(val, str): return val
+    if isinstance(val, list): return " ".join(safe_str(x) for x in val)
+    return str(val)
+
 def extract_full_jo_text(jo_node):
     texts = []
     
-    # 1. 기본 조문 내용 (껍데기)
-    jo_cntt = jo_node.get("joCntt") or jo_node.get("조문내용") or ""
-    if jo_cntt: 
-        texts.append(jo_cntt)
+    # 껍데기 조문 내용
+    jo_cntt = safe_str(jo_node.get("joCntt") or jo_node.get("조문내용"))
+    if jo_cntt.strip(): texts.append(jo_cntt)
 
-    # 2. 직계 호(Ho)와 목(Mok) 추출 (항이 생략되고 바로 호가 나오는 법령 대비)
+    # 직계 호/목 추출
     for ho in ensure_list(jo_node.get("Ho") or jo_node.get("호") or []):
-        ho_cntt = ho.get("hoCntt") or ho.get("호내용") or ""
-        if ho_cntt: texts.append(ho_cntt)
+        ho_cntt = safe_str(ho.get("hoCntt") or ho.get("호내용"))
+        if ho_cntt.strip(): texts.append(ho_cntt)
         for mok in ensure_list(ho.get("Mok") or ho.get("목") or []):
-            mok_cntt = mok.get("mokCntt") or mok.get("목내용") or ""
-            if mok_cntt: texts.append(mok_cntt)
+            mok_cntt = safe_str(mok.get("mokCntt") or mok.get("목내용"))
+            if mok_cntt.strip(): texts.append(mok_cntt)
 
-    # 3. 항(Hang), 그리고 그 안의 호(Ho), 목(Mok) 추출
+    # 항 -> 호 -> 목 순차 추출
     for hang in ensure_list(jo_node.get("Hang") or jo_node.get("항") or []):
-        hang_cntt = hang.get("hangCntt") or hang.get("항내용") or ""
-        if hang_cntt: texts.append(hang_cntt)
+        hang_cntt = safe_str(hang.get("hangCntt") or hang.get("항내용"))
+        if hang_cntt.strip(): texts.append(hang_cntt)
         
         for ho in ensure_list(hang.get("Ho") or hang.get("호") or []):
-            ho_cntt = ho.get("hoCntt") or ho.get("호내용") or ""
-            if ho_cntt: texts.append(ho_cntt)
+            ho_cntt = safe_str(ho.get("hoCntt") or ho.get("호내용"))
+            if ho_cntt.strip(): texts.append(ho_cntt)
             
             for mok in ensure_list(ho.get("Mok") or ho.get("목") or []):
-                mok_cntt = mok.get("mokCntt") or mok.get("목내용") or ""
-                if mok_cntt: texts.append(mok_cntt)
+                mok_cntt = safe_str(mok.get("mokCntt") or mok.get("목내용"))
+                if mok_cntt.strip(): texts.append(mok_cntt)
 
-    # 추출한 모든 텍스트를 줄바꿈으로 예쁘게 이어 붙입니다.
     return "\n\n".join(texts)
 
 def extract_jo_byl(data):
@@ -106,7 +110,7 @@ def extract_jo_byl(data):
     return jo_list, byl_list
 
 with st.form(key="search_form"):
-    search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건폐율, 단열재의 두께)")
+    search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건폐율, 단열재 두께)")
     submit_button = st.form_submit_button("🔍 법 조문 및 별표 PDF 바로 띄우기")
 
 if submit_button:
@@ -156,8 +160,8 @@ if submit_button:
                         items.extend(ensure_list(v))
 
                 for item in items:
-                    item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
-                    item_link = item.get("법령상세링크") or item.get("행정규칙상세링크")
+                    item_name = safe_str(item.get("법령명한글") or item.get("행정규칙명") or "이름 없음")
+                    item_link = safe_str(item.get("법령상세링크") or item.get("행정규칙상세링크"))
                     
                     if not item_link:
                         continue
@@ -183,10 +187,9 @@ if submit_button:
                     byeonpyo_matches = []
 
                     for jo in jo_list:
-                        jo_no = str(jo.get("joNo") or jo.get("조문번호") or "")
-                        jo_title = str(jo.get("joSj") or jo.get("조문제목") or "")
+                        jo_no = safe_str(jo.get("joNo") or jo.get("조문번호"))
+                        jo_title = safe_str(jo.get("joSj") or jo.get("조문제목"))
                         
-                        # 💡 새로 만든 함수로 숨겨진 모든 항, 호, 목의 텍스트를 긁어옵니다.
                         jo_content = extract_full_jo_text(jo)
                         
                         text_to_search = jo_title + " " + jo_content
@@ -198,17 +201,12 @@ if submit_button:
                             })
 
                     for byl in byl_list:
-                        title = str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
+                        title = safe_str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명"))
                         
-                        is_match = False
-                        if any(kw in search_keyword for kw in ["단열", "두께"]):
-                            is_match = any(tok in title for tok in ["단열재", "두께"])
-                        else:
-                            is_match = all(tok in title for tok in clean_tokens)
-
-                        if is_match:
-                            pdf_path = byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크") or ""
-                            hwp_path = byl.get("bylHwpLink") or byl.get("별표서식파일링크") or ""
+                        # 💡 [핵심 해결 로직 2] "단열재 두께" 입력 시 "단열재"와 "두께"가 제목에 모두 포함되면 합격!
+                        if all(tok in title for tok in clean_tokens):
+                            pdf_path = safe_str(byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크"))
+                            hwp_path = safe_str(byl.get("bylHwpLink") or byl.get("별표서식파일링크"))
                             
                             byeonpyo_matches.append({
                                 "title": title,
@@ -227,7 +225,6 @@ if submit_button:
                                     for art in found_articles[:7]: 
                                         st.markdown(f"**제{art['no']}조({art['title']})**")
                                         
-                                        # 💡 여러 줄로 된 텍스트(항/호/목) 각각에 마크다운 인용구(>) 블록 적용
                                         highlighted = art['content']
                                         for token in clean_tokens:
                                             highlighted = highlighted.replace(token, f"**<span style='color:#e63946; background-color:#f8edeb;'>{token}</span>**")
