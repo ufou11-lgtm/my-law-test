@@ -26,7 +26,7 @@ REQUEST_TIMEOUT = 15
 
 st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️", layout="wide")
 st.title("⚖️ 스마트 법규 검토 시스템 (실무형 통합 검색)")
-st.markdown("건축 용어(**건폐율, 단열재의 두께, 주차장** 등)를 입력하고 **엔터(Enter)**를 누르세요. 조문과 별표 PDF를 화면에 바로 띄워줍니다.")
+st.markdown("건축 용어(**건폐율, 용적률, 단열재의 두께** 등)를 입력하고 **엔터(Enter)**를 누르세요. 연계된 법령과 별표 PDF를 한 번에 찾아 띄워줍니다.")
 
 @st.cache_data(show_spinner=False, ttl=3600)
 def fetch_api_json(url, params):
@@ -49,7 +49,6 @@ def get_pdf_base64(pdf_url):
     return None
 
 def ensure_list(data):
-    """💡 [해결 핵심] 단일 딕셔너리든 리스트든 무조건 리스트로 안전하게 변환합니다."""
     if not data: return []
     if isinstance(data, dict): return [data]
     return data
@@ -74,42 +73,43 @@ def extract_jo_byl(data):
     return jo_list, byl_list
 
 with st.form(key="search_form"):
-    search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 단열재의 두께)")
+    search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건폐율, 단열재의 두께)")
     submit_button = st.form_submit_button("🔍 법 조문 및 별표 PDF 바로 띄우기")
 
 if submit_button:
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
     else:
+        # 조사 제거 및 핵심 키워드 추출
         raw_tokens = search_keyword.split()
         clean_tokens = [re.sub(r'(의|를|을|은|는|이|가)$', '', tok) for tok in raw_tokens]
         clean_tokens = [tok for tok in clean_tokens if len(tok) >= 2]
         if not clean_tokens:
             clean_tokens = raw_tokens
 
-        # 스마트 타겟 설정
-        if any(keyword in search_keyword for keyword in ["단열", "두께", "단열재"]):
-            search_targets = [
-                {"code": "admrul", "law_name": "건축물의 에너지절약설계기준", "label": "행정규칙"}
-            ]
+        # 💡 [핵심 해결 로직] 검색어에 따른 '연계 법령' 자동 세팅
+        search_targets = []
+        
+        if any(kw in search_keyword for kw in ["단열", "두께", "단열재"]):
+            search_targets.append({"code": "admrul", "law_name": "건축물의 에너지절약설계기준", "label": "행정규칙(고시)"})
+            
         elif "건폐" in search_keyword or "용적" in search_keyword:
-            search_targets = [
-                {"code": "law", "law_name": "건축법", "label": "법령"}
-            ]
+            # 건폐율/용적률 검색 시 건축법과 국토계획법을 동시에 정밀 타격!
+            search_targets.append({"code": "law", "law_name": "건축법", "label": "기본 법령"})
+            search_targets.append({"code": "law", "law_name": "국토의 계획 및 이용에 관한 법률", "label": "🔗 연계 법령(국토계획법)"})
+            
         elif "주차" in search_keyword:
-            search_targets = [
-                {"code": "law", "law_name": "주차장법", "label": "법령"}
-            ]
+            search_targets.append({"code": "law", "law_name": "주차장법", "label": "법령"})
+            
         else:
-            search_targets = [
-                {"code": "admrul", "law_name": search_keyword.split()[0], "label": "행정규칙"},
-                {"code": "law", "law_name": "건축법", "label": "법령"}
-            ]
+            # 기타 검색어는 입력한 단어 자체를 행정규칙/법령에서 탐색
+            search_targets.append({"code": "admrul", "law_name": clean_tokens[0], "label": "행정규칙"})
+            search_targets.append({"code": "law", "law_name": "건축법", "label": "법령"})
 
         total_found_count = 0
         
         with st.status("⚙️ **가장 정확한 법령 및 별표 데이터 정밀 분석 중...**", expanded=True) as status:
-            st.write(f"▶️ 스마트 타겟팅 적용 완료 | 핵심 키워드: `{clean_tokens}`")
+            st.write(f"▶️ 스마트 타겟팅 적용 완료 | 추출된 키워드: `{clean_tokens}`")
             
             for target in search_targets:
                 code = target["code"]
@@ -128,7 +128,6 @@ if submit_button:
                 items = []
                 for k, v in search_root.items():
                     if isinstance(v, (list, dict)):
-                        # 💡 [해결 핵심] ensure_list를 거쳐 단일 결과도 누락 없이 수집합니다.
                         items.extend(ensure_list(v))
 
                 for item in items:
@@ -138,7 +137,8 @@ if submit_button:
                     if not item_link:
                         continue
 
-                    if any(kw in search_keyword for kw in ["단열", "두께", "단열재"]) and "에너지절약설계기준" not in item_name:
+                    # 타겟으로 삼은 법령 이름이 실제 결과에 포함되어 있는지 확인 (예: '건축법' 검색 -> '건축법 시행령' 허용)
+                    if law_name.replace(" ", "") not in item_name.replace(" ", ""):
                         continue
 
                     parsed = urllib.parse.urlparse(item_link)
@@ -158,36 +158,43 @@ if submit_button:
                     found_articles = []
                     byeonpyo_matches = []
 
-                    if not any(kw in search_keyword for kw in ["단열", "두께", "단열재"]):
-                        for jo in jo_list:
-                            jo_no = str(jo.get("joNo") or jo.get("조문번호") or "")
-                            jo_title = str(jo.get("joSj") or jo.get("조문제목") or "")
-                            jo_content = str(jo.get("joCntt") or jo.get("조문내용") or "")
-                            
-                            text_to_search = jo_title + " " + jo_content
-                            if sum(1 for tok in clean_tokens if tok in text_to_search) >= len(clean_tokens) * 0.5:
-                                found_articles.append({
-                                    "no": jo_no,
-                                    "title": jo_title,
-                                    "content": jo_content
-                                })
+                    # 1. 조문 검색
+                    for jo in jo_list:
+                        jo_no = str(jo.get("joNo") or jo.get("조문번호") or "")
+                        jo_title = str(jo.get("joSj") or jo.get("조문제목") or "")
+                        jo_content = str(jo.get("joCntt") or jo.get("조문내용") or "")
+                        
+                        text_to_search = jo_title + " " + jo_content
+                        # 핵심 키워드가 조문이나 제목에 포함되어 있으면 발췌
+                        if sum(1 for tok in clean_tokens if tok in text_to_search) >= len(clean_tokens) * 0.5:
+                            found_articles.append({
+                                "no": jo_no,
+                                "title": jo_title,
+                                "content": jo_content
+                            })
 
+                    # 2. 별표(첨부문서) 검색
                     for byl in byl_list:
                         title = str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
                         
-                        if any(tok in title for tok in ["단열재", "두께"]) or all(tok in title for tok in clean_tokens):
+                        # 단열재 관련 검색 시 유연성 부여, 그 외에는 정확도 우선
+                        is_match = False
+                        if any(kw in search_keyword for kw in ["단열", "두께"]):
+                            is_match = any(tok in title for tok in ["단열재", "두께"])
+                        else:
+                            is_match = all(tok in title for tok in clean_tokens)
+
+                        if is_match:
                             pdf_path = byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크") or ""
                             hwp_path = byl.get("bylHwpLink") or byl.get("별표서식파일링크") or ""
                             
-                            pdf_full_url = f"https://www.law.go.kr{pdf_path}" if pdf_path else None
-                            hwp_full_url = f"https://www.law.go.kr{hwp_path}" if hwp_path else None
-                            
                             byeonpyo_matches.append({
                                 "title": title,
-                                "pdf_url": pdf_full_url,
-                                "hwp_url": hwp_full_url
+                                "pdf_url": f"https://www.law.go.kr{pdf_path}" if pdf_path else None,
+                                "hwp_url": f"https://www.law.go.kr{hwp_path}" if hwp_path else None
                             })
 
+                    # 매칭된 결과가 있을 때만 화면에 출력
                     if found_articles or byeonpyo_matches:
                         total_found_count += 1
                         
@@ -196,13 +203,18 @@ if submit_button:
                                 
                                 if found_articles:
                                     st.markdown("### 📜 관련 법 조문")
-                                    for art in found_articles[:5]: 
+                                    # 조문이 너무 많을 경우 핵심만 보기 위해 최대 7개로 제한
+                                    for art in found_articles[:7]: 
                                         st.markdown(f"**제{art['no']}조({art['title']})**")
-                                        st.markdown(f"> {art['content']}")
+                                        # 검색어 강조 표시
+                                        highlighted = art['content']
+                                        for token in clean_tokens:
+                                            highlighted = highlighted.replace(token, f"**<span style='color:#e63946; background-color:#f8edeb;'>{token}</span>**")
+                                        st.markdown(f"> {highlighted}", unsafe_allow_html=True)
                                         st.divider()
 
                                 if byeonpyo_matches:
-                                    st.markdown("### 📎 관련 별표 PDF 미리보기 (단열재 두께 기준)")
+                                    st.markdown("### 📎 관련 별표 및 첨부파일")
                                     for bp in byeonpyo_matches:
                                         st.markdown(f"**{bp['title']}**")
                                         
@@ -227,6 +239,6 @@ if submit_button:
                 status.update(label="❌ 일치하는 문서를 찾지 못했습니다.", state="error", expanded=True)
 
         if total_found_count == 0:
-            st.info("검색어가 너무 길거나 정확하지 않을 수 있습니다. '단열재' 또는 '에너지'처럼 단독 키워드로 검색해 보세요.")
+            st.info("조건에 맞는 결과가 없습니다. 키워드를 한 단어로 줄여서 검색해 보세요.")
         else:
             st.toast('성공적으로 불러왔습니다!', icon='🎉')
