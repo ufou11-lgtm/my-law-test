@@ -53,8 +53,8 @@ def ensure_list(data):
     if isinstance(data, dict): return [data]
     return data
 
-# 💡 [핵심 해결 로직 1] API가 리스트를 던지든 딕셔너리를 던지든 무조건 안전한 텍스트로 바꿔주는 마법의 함수
 def safe_str(val):
+    """API가 텍스트, 리스트 등 뭘 주든 무조건 안전한 문자로 변환합니다."""
     if not val: return ""
     if isinstance(val, str): return val
     if isinstance(val, list): return " ".join(safe_str(x) for x in val)
@@ -63,11 +63,9 @@ def safe_str(val):
 def extract_full_jo_text(jo_node):
     texts = []
     
-    # 껍데기 조문 내용
     jo_cntt = safe_str(jo_node.get("joCntt") or jo_node.get("조문내용"))
     if jo_cntt.strip(): texts.append(jo_cntt)
 
-    # 직계 호/목 추출
     for ho in ensure_list(jo_node.get("Ho") or jo_node.get("호") or []):
         ho_cntt = safe_str(ho.get("hoCntt") or ho.get("호내용"))
         if ho_cntt.strip(): texts.append(ho_cntt)
@@ -75,7 +73,6 @@ def extract_full_jo_text(jo_node):
             mok_cntt = safe_str(mok.get("mokCntt") or mok.get("목내용"))
             if mok_cntt.strip(): texts.append(mok_cntt)
 
-    # 항 -> 호 -> 목 순차 추출
     for hang in ensure_list(jo_node.get("Hang") or jo_node.get("항") or []):
         hang_cntt = safe_str(hang.get("hangCntt") or hang.get("항내용"))
         if hang_cntt.strip(): texts.append(hang_cntt)
@@ -186,27 +183,51 @@ if submit_button:
                     found_articles = []
                     byeonpyo_matches = []
 
+                    # 조문 분석 시작
                     for jo in jo_list:
-                        jo_no = safe_str(jo.get("joNo") or jo.get("조문번호"))
-                        jo_title = safe_str(jo.get("joSj") or jo.get("조문제목"))
+                        jo_no = safe_str(jo.get("joNo") or jo.get("조문번호") or "")
+                        jo_title = safe_str(jo.get("joSj") or jo.get("조문제목") or "")
                         
-                        jo_content = extract_full_jo_text(jo)
+                        raw_content = extract_full_jo_text(jo)
                         
-                        text_to_search = jo_title + " " + jo_content
-                        if sum(1 for tok in clean_tokens if tok in text_to_search) >= len(clean_tokens) * 0.5:
-                            found_articles.append({
-                                "no": jo_no,
-                                "title": jo_title,
-                                "content": jo_content
-                            })
+                        # 💡 [핵심 해결 로직] 통짜로 던져진 텍스트를 '제O조(제목)' 기준으로 토막(Chunk) 냅니다.
+                        chunks = re.split(r'(?=제\d+조(?:의\d+)?\s*\()', raw_content)
+                        
+                        for chunk in chunks:
+                            chunk = chunk.strip()
+                            if not chunk: continue
+                            
+                            text_to_search = jo_title + " " + chunk
+                            
+                            # 추출된 핵심 키워드가 덩어리 안에 "모두" 포함되어 있는지 깐깐하게 검사
+                            if all(tok in text_to_search for tok in clean_tokens):
+                                # 토막 난 덩어리에서 조 번호와 제목을 스스로 파악합니다.
+                                m = re.match(r'(제\d+조(?:의\d+)?)\s*\((.*?)\)(.*)', chunk, re.DOTALL)
+                                if m:
+                                    chunk_no = m.group(1).replace("제", "").replace("조", "")
+                                    chunk_title = m.group(2).strip()
+                                    chunk_content = m.group(3).strip()
+                                else:
+                                    chunk_no = jo_no if jo_no else "-"
+                                    chunk_title = jo_title if jo_title else "관련 조문 내용"
+                                    chunk_content = chunk
+                                
+                                # 중복 방지 (같은 내용이 두 번 들어가는 것 방지)
+                                if not any(a['title'] == chunk_title and a['content'] == chunk_content for a in found_articles):
+                                    found_articles.append({
+                                        "no": chunk_no,
+                                        "title": chunk_title,
+                                        "content": chunk_content
+                                    })
 
+                    # 별표(첨부문서) 분석 시작
                     for byl in byl_list:
-                        title = safe_str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명"))
+                        title = safe_str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
                         
-                        # 💡 [핵심 해결 로직 2] "단열재 두께" 입력 시 "단열재"와 "두께"가 제목에 모두 포함되면 합격!
+                        # 유연한 검색: '단열재', '두께' 토큰이 모두 별표 제목에 들어가면 합격!
                         if all(tok in title for tok in clean_tokens):
-                            pdf_path = safe_str(byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크"))
-                            hwp_path = safe_str(byl.get("bylHwpLink") or byl.get("별표서식파일링크"))
+                            pdf_path = safe_str(byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크") or "")
+                            hwp_path = safe_str(byl.get("bylHwpLink") or byl.get("별표서식파일링크") or "")
                             
                             byeonpyo_matches.append({
                                 "title": title,
@@ -221,10 +242,13 @@ if submit_button:
                             with st.expander(f"🎯 [{label}] {item_name} (결과 열기)", expanded=True):
                                 
                                 if found_articles:
-                                    st.markdown("### 📜 관련 법 조문")
+                                    st.markdown("### 📜 관련 법 조문 발췌")
                                     for art in found_articles[:7]: 
-                                        st.markdown(f"**제{art['no']}조({art['title']})**")
-                                        
+                                        if art['no'] and art['no'] != "-":
+                                            st.markdown(f"**제{art['no']}조({art['title']})**")
+                                        else:
+                                            st.markdown(f"**{art['title']}**")
+                                            
                                         highlighted = art['content']
                                         for token in clean_tokens:
                                             highlighted = highlighted.replace(token, f"**<span style='color:#e63946; background-color:#f8edeb;'>{token}</span>**")
