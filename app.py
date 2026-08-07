@@ -31,15 +31,13 @@ TARGET_NATIONAL_LAWS = [
 ]
 
 # ==========================================
-# 2. 검색어 분석 함수 (지역명 & 키워드 분리 보완)
+# 2. 검색어 분석 함수 (지역명 & 키워드 분리)
 # ==========================================
 def parse_user_input(user_text):
-    # 시/도 추출
     sido_pattern = r'(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원특별자치도|충청북도|충청남도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)'
     sido_match = re.search(sido_pattern, user_text)
     sido = sido_match.group(0) if sido_match else ""
     
-    # 시/도 부분을 제거한 뒤 시/군/구 추출 (인천광역시가 시/군/구로 중복 인식되는 현상 방지)
     remaining_text = re.sub(sido_pattern, '', user_text) if sido else user_text
     sugg_match = re.search(r'([가-힣]+시|[가-힣]+군|[가-힣]+구)', remaining_text)
     sugg = sugg_match.group(0) if sugg_match else ""
@@ -52,16 +50,14 @@ def parse_user_input(user_text):
     return sido, sugg, keyword
 
 # ==========================================
-# 3. 법제처 API 연동 함수 (차단 회피 및 에러 로깅 강화)
+# 3. 법제처 API 연동 함수 (XML 태그 오류 수정 완료)
 # ==========================================
 def search_law_articles(oc, target_type, query_name, keyword):
     results = []
-    # 차단 회피를 위한 브라우저 User-Agent 설정
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     
-    # HTTPS 보안 프로토콜 적용
     search_url = f"https://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={target_type}&type=XML&query={query_name}"
     
     try:
@@ -69,10 +65,8 @@ def search_law_articles(oc, target_type, query_name, keyword):
         if response.status_code != 200:
             return results, f"HTTP 에러 코드: {response.status_code}"
         
-        # XML 파싱
         root = ET.fromstring(response.content)
         
-        # 법제처 API 자체 에러 메시지 검사
         errMsg = root.findtext('result/errMsg') or root.findtext('errMsg')
         if errMsg and "정상" not in errMsg:
             return results, f"법제처 API 응답 오류: {errMsg}"
@@ -95,10 +89,12 @@ def search_law_articles(oc, target_type, query_name, keyword):
             detail_root = ET.fromstring(detail_resp.content)
             
             for jo in detail_root.findall('.//조문단위'):
-                jo_title = jo.findtext('조제목', '')
-                jo_content = jo.findtext('조내용', '')
-                jo_num = jo.findtext('조문번호', '')
+                # 💡 [핵심 수정] 법제처 API의 실제 XML 표준 태그인 '조문제목'과 '조문내용'을 읽도록 변경했습니다.
+                jo_title = jo.findtext('조문제목') or jo.findtext('조제목') or ''
+                jo_content = jo.findtext('조문내용') or jo.findtext('조내용') or ''
+                jo_num = jo.findtext('조문번호') or ''
                 
+                # 조문제목이나 조문내용에 검색 키워드(예: 건폐율)가 포함되었는지 확인
                 if keyword in jo_title or keyword in jo_content:
                     sub_contents = []
                     for hang in jo.findall('.//항'):
@@ -106,10 +102,13 @@ def search_law_articles(oc, target_type, query_name, keyword):
                         if hang_content:
                             sub_contents.append(hang_content)
                     
-                    full_text = jo_content + "\n" + "\n".join(sub_contents)
+                    full_text = jo_content
+                    if sub_contents:
+                        full_text += "\n" + "\n".join(sub_contents)
+                        
                     results.append({
                         "law_title": law_title,
-                        "article_num": f"제{jo_num}조",
+                        "article_num": f"제{jo_num}조" if jo_num else "",
                         "article_title": jo_title,
                         "content": full_text
                     })
@@ -144,14 +143,19 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
             all_results = []
             error_logs = []
             
-            # 지자체 조례 검색
+            # 지자체 조례 검색 대상 후보 (띄어쓰기 변형 포함)
             if sido:
-                local_ordinance_names = [f"{sido} 도시계획조례", f"{sido} 건축조례"]
+                local_ordinance_names = [
+                    f"{sido} 도시계획조례", f"{sido} 도시계획 조례",
+                    f"{sido} 건축조례", f"{sido} 건축 조례"
+                ]
                 if sugg and sugg != sido:
-                    local_ordinance_names.append(f"{sugg} 도시계획조례")
-                    local_ordinance_names.append(f"{sugg} 건축조례")
+                    local_ordinance_names.extend([
+                        f"{sugg} 건축조례", f"{sugg} 건축 조례"
+                    ])
                 
-                for ordin_name in local_ordinance_names:
+                # 중복 검색 방지
+                for ordin_name in list(dict.fromkeys(local_ordinance_names)):
                     res, err = search_law_articles(api_oc, "ordin", ordin_name, keyword)
                     if err:
                         error_logs.append(f"[{ordin_name}] {err}")
@@ -164,7 +168,7 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
                     error_logs.append(f"[{law_name}] {err}")
                 all_results.extend(res)
 
-        # 시스템 에러 로그 출력 (문제 발생 시 디버깅용)
+        # 오류 발생 시 디버깅 정보 표시
         if error_logs:
             with st.expander("⚠️ API 통신 및 연동 상태 확인 (디버깅 정보)", expanded=False):
                 for err in set(error_logs):
@@ -173,10 +177,15 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
         st.subheader(f"📋 '{keyword}' 관련 법령 및 조례 검색 결과 (총 {len(all_results)}건)")
         
         if all_results:
+            # 중복 조문 제거
+            seen = set()
             for item in all_results:
-                with st.expander(f"📖 [{item['law_title']}] {item['article_num']} ({item['article_title']})"):
-                    st.markdown(f"**조문 내용:**")
-                    st.text(item['content'])
+                identifier = (item['law_title'], item['article_num'], item['article_title'])
+                if identifier not in seen:
+                    seen.add(identifier)
+                    with st.expander(f"📖 [{item['law_title']}] {item['article_num']} ({item['article_title']})", expanded=True):
+                        st.markdown(f"**조문 내용:**")
+                        st.text(item['content'])
         else:
             st.info("💡 법제처 Open API 연동 결과가 없거나 API 키가 올바르지 않습니다. 아래는 시스템 예시 출력 화면입니다.")
             
@@ -188,7 +197,5 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
                 1. 제1종전용주거지역 : 50퍼센트 이하
                 2. 제2종전용주거지역 : 50퍼센트 이하
                 3. 제1종일반주거지역 : 60퍼센트 이하
-                4. 제2종일반주거지역 : 60퍼센트 이하
-                5. 제3종일반주거지역 : 50퍼센트 이하
                 ...
                 """)
