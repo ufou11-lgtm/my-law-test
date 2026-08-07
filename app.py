@@ -3,6 +3,7 @@ import streamlit as st
 import requests
 import urllib.parse
 import base64
+import re  # 💡 [해결] 빠져있던 정규식 모듈을 추가했습니다!
 
 def load_api_key():
     key = os.environ.get("OC_KEY")
@@ -49,7 +50,6 @@ def fetch_api_json(url, params):
 
 @st.cache_data(show_spinner=False, ttl=1800)
 def get_pdf_base64(pdf_url):
-    """PDF 파일을 다운로드하여 스트림릿 화면에 바로 띄우기 위해 Base64로 변환합니다."""
     try:
         resp = requests.get(pdf_url, timeout=10)
         if resp.status_code == 200:
@@ -85,13 +85,12 @@ if submit_button:
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
     else:
-        # 💡 [해결 포인트 1] 조문 및 조사('의', '은', '는', '이', '가')를 깔끔하게 제거하여 핵심 키워드만 추출
         raw_tokens = search_keyword.split()
         clean_tokens = [re.sub(r'(의|를|을|은|는|이|가)$', '', tok) for tok in raw_tokens]
-        clean_tokens = [tok for tok in clean_tokens if len(tok) >= 2] # 2글자 이상인 의미 있는 단어만 채택
+        clean_tokens = [tok for tok in clean_tokens if len(tok) >= 2]
         
         if not clean_tokens:
-            clean_tokens = raw_tokens # 너무 짧으면 원본 유지
+            clean_tokens = raw_tokens
 
         laws_to_search = set()
         for key, laws in KEYWORD_TO_LAW_MAP.items():
@@ -153,7 +152,6 @@ if submit_button:
                             jo_content = str(jo.get("joCntt") or jo.get("조문내용") or "")
                             
                             text_to_search = jo_title + " " + jo_content
-                            # 핵심 키워드 중 절반 이상이 포함되면 인정
                             if sum(1 for tok in clean_tokens if tok in text_to_search) >= len(clean_tokens) * 0.5:
                                 found_articles.append({
                                     "no": jo_no,
@@ -164,7 +162,6 @@ if submit_button:
                         for byl in byl_list:
                             title = str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
                             
-                            # 💡 [해결 포인트 2] 별표 제목에 '단열재' 또는 '두께'가 포함되어 있는지 유연하게 검사
                             if any(tok in title for tok in clean_tokens):
                                 pdf_path = byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크") or ""
                                 hwp_path = byl.get("bylHwpLink") or byl.get("별표서식파일링크") or ""
@@ -196,7 +193,6 @@ if submit_button:
                                         for bp in byeonpyo_matches:
                                             st.markdown(f"**{bp['title']}**")
                                             
-                                            # 💡 [해결 포인트 3] PDF 파일을 다운로드해 창 안에 곧바로 렌더링(Iframe)
                                             if bp['pdf_url']:
                                                 with st.spinner("PDF 문서를 화면에 불러오는 중입니다..."):
                                                     pdf_b64 = get_pdf_base64(bp['pdf_url'])
