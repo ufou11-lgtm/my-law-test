@@ -53,6 +53,39 @@ def ensure_list(data):
     if isinstance(data, dict): return [data]
     return data
 
+# 💡 [핵심 해결 로직] 조문 안쪽에 숨어있는 '항(Hang)', '호(Ho)', '목(Mok)' 데이터를 모조리 긁어오는 함수
+def extract_full_jo_text(jo_node):
+    texts = []
+    
+    # 1. 기본 조문 내용 (껍데기)
+    jo_cntt = jo_node.get("joCntt") or jo_node.get("조문내용") or ""
+    if jo_cntt: 
+        texts.append(jo_cntt)
+
+    # 2. 직계 호(Ho)와 목(Mok) 추출 (항이 생략되고 바로 호가 나오는 법령 대비)
+    for ho in ensure_list(jo_node.get("Ho") or jo_node.get("호") or []):
+        ho_cntt = ho.get("hoCntt") or ho.get("호내용") or ""
+        if ho_cntt: texts.append(ho_cntt)
+        for mok in ensure_list(ho.get("Mok") or ho.get("목") or []):
+            mok_cntt = mok.get("mokCntt") or mok.get("목내용") or ""
+            if mok_cntt: texts.append(mok_cntt)
+
+    # 3. 항(Hang), 그리고 그 안의 호(Ho), 목(Mok) 추출
+    for hang in ensure_list(jo_node.get("Hang") or jo_node.get("항") or []):
+        hang_cntt = hang.get("hangCntt") or hang.get("항내용") or ""
+        if hang_cntt: texts.append(hang_cntt)
+        
+        for ho in ensure_list(hang.get("Ho") or hang.get("호") or []):
+            ho_cntt = ho.get("hoCntt") or ho.get("호내용") or ""
+            if ho_cntt: texts.append(ho_cntt)
+            
+            for mok in ensure_list(ho.get("Mok") or ho.get("목") or []):
+                mok_cntt = mok.get("mokCntt") or mok.get("목내용") or ""
+                if mok_cntt: texts.append(mok_cntt)
+
+    # 추출한 모든 텍스트를 줄바꿈으로 예쁘게 이어 붙입니다.
+    return "\n\n".join(texts)
+
 def extract_jo_byl(data):
     jo_list = []
     byl_list = []
@@ -80,29 +113,21 @@ if submit_button:
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
     else:
-        # 조사 제거 및 핵심 키워드 추출
         raw_tokens = search_keyword.split()
         clean_tokens = [re.sub(r'(의|를|을|은|는|이|가)$', '', tok) for tok in raw_tokens]
         clean_tokens = [tok for tok in clean_tokens if len(tok) >= 2]
         if not clean_tokens:
             clean_tokens = raw_tokens
 
-        # 💡 [핵심 해결 로직] 검색어에 따른 '연계 법령' 자동 세팅
         search_targets = []
-        
         if any(kw in search_keyword for kw in ["단열", "두께", "단열재"]):
             search_targets.append({"code": "admrul", "law_name": "건축물의 에너지절약설계기준", "label": "행정규칙(고시)"})
-            
         elif "건폐" in search_keyword or "용적" in search_keyword:
-            # 건폐율/용적률 검색 시 건축법과 국토계획법을 동시에 정밀 타격!
             search_targets.append({"code": "law", "law_name": "건축법", "label": "기본 법령"})
             search_targets.append({"code": "law", "law_name": "국토의 계획 및 이용에 관한 법률", "label": "🔗 연계 법령(국토계획법)"})
-            
         elif "주차" in search_keyword:
             search_targets.append({"code": "law", "law_name": "주차장법", "label": "법령"})
-            
         else:
-            # 기타 검색어는 입력한 단어 자체를 행정규칙/법령에서 탐색
             search_targets.append({"code": "admrul", "law_name": clean_tokens[0], "label": "행정규칙"})
             search_targets.append({"code": "law", "law_name": "건축법", "label": "법령"})
 
@@ -137,7 +162,6 @@ if submit_button:
                     if not item_link:
                         continue
 
-                    # 타겟으로 삼은 법령 이름이 실제 결과에 포함되어 있는지 확인 (예: '건축법' 검색 -> '건축법 시행령' 허용)
                     if law_name.replace(" ", "") not in item_name.replace(" ", ""):
                         continue
 
@@ -158,14 +182,14 @@ if submit_button:
                     found_articles = []
                     byeonpyo_matches = []
 
-                    # 1. 조문 검색
                     for jo in jo_list:
                         jo_no = str(jo.get("joNo") or jo.get("조문번호") or "")
                         jo_title = str(jo.get("joSj") or jo.get("조문제목") or "")
-                        jo_content = str(jo.get("joCntt") or jo.get("조문내용") or "")
+                        
+                        # 💡 새로 만든 함수로 숨겨진 모든 항, 호, 목의 텍스트를 긁어옵니다.
+                        jo_content = extract_full_jo_text(jo)
                         
                         text_to_search = jo_title + " " + jo_content
-                        # 핵심 키워드가 조문이나 제목에 포함되어 있으면 발췌
                         if sum(1 for tok in clean_tokens if tok in text_to_search) >= len(clean_tokens) * 0.5:
                             found_articles.append({
                                 "no": jo_no,
@@ -173,11 +197,9 @@ if submit_button:
                                 "content": jo_content
                             })
 
-                    # 2. 별표(첨부문서) 검색
                     for byl in byl_list:
                         title = str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
                         
-                        # 단열재 관련 검색 시 유연성 부여, 그 외에는 정확도 우선
                         is_match = False
                         if any(kw in search_keyword for kw in ["단열", "두께"]):
                             is_match = any(tok in title for tok in ["단열재", "두께"])
@@ -194,7 +216,6 @@ if submit_button:
                                 "hwp_url": f"https://www.law.go.kr{hwp_path}" if hwp_path else None
                             })
 
-                    # 매칭된 결과가 있을 때만 화면에 출력
                     if found_articles or byeonpyo_matches:
                         total_found_count += 1
                         
@@ -203,14 +224,16 @@ if submit_button:
                                 
                                 if found_articles:
                                     st.markdown("### 📜 관련 법 조문")
-                                    # 조문이 너무 많을 경우 핵심만 보기 위해 최대 7개로 제한
                                     for art in found_articles[:7]: 
                                         st.markdown(f"**제{art['no']}조({art['title']})**")
-                                        # 검색어 강조 표시
+                                        
+                                        # 💡 여러 줄로 된 텍스트(항/호/목) 각각에 마크다운 인용구(>) 블록 적용
                                         highlighted = art['content']
                                         for token in clean_tokens:
                                             highlighted = highlighted.replace(token, f"**<span style='color:#e63946; background-color:#f8edeb;'>{token}</span>**")
-                                        st.markdown(f"> {highlighted}", unsafe_allow_html=True)
+                                        
+                                        formatted_lines = "\n".join([f"> {line}" for line in highlighted.split("\n") if line.strip()])
+                                        st.markdown(formatted_lines, unsafe_allow_html=True)
                                         st.divider()
 
                                 if byeonpyo_matches:
