@@ -48,6 +48,12 @@ def get_pdf_base64(pdf_url):
         pass
     return None
 
+def ensure_list(data):
+    """💡 [해결 핵심] 단일 딕셔너리든 리스트든 무조건 리스트로 안전하게 변환합니다."""
+    if not data: return []
+    if isinstance(data, dict): return [data]
+    return data
+
 def extract_jo_byl(data):
     jo_list = []
     byl_list = []
@@ -81,8 +87,7 @@ if submit_button:
         if not clean_tokens:
             clean_tokens = raw_tokens
 
-        # 💡 [핵심 해결 로직] '단열' 또는 '두께'가 들어가면 무조건 '건축물의 에너지절약설계기준'만 정밀 타격합니다!
-        search_targets = []
+        # 스마트 타겟 설정
         if any(keyword in search_keyword for keyword in ["단열", "두께", "단열재"]):
             search_targets = [
                 {"code": "admrul", "law_name": "건축물의 에너지절약설계기준", "label": "행정규칙"}
@@ -96,7 +101,6 @@ if submit_button:
                 {"code": "law", "law_name": "주차장법", "label": "법령"}
             ]
         else:
-            # 그 외 일반 검색은 행정규칙과 법령 모두 탐색하되 명확히 제한
             search_targets = [
                 {"code": "admrul", "law_name": search_keyword.split()[0], "label": "행정규칙"},
                 {"code": "law", "law_name": "건축법", "label": "법령"}
@@ -123,8 +127,9 @@ if submit_button:
                 search_root = list(list_data.values())[0] if list_data.values() else {}
                 items = []
                 for k, v in search_root.items():
-                    if isinstance(v, list):
-                        items.extend(v)
+                    if isinstance(v, (list, dict)):
+                        # 💡 [해결 핵심] ensure_list를 거쳐 단일 결과도 누락 없이 수집합니다.
+                        items.extend(ensure_list(v))
 
                 for item in items:
                     item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
@@ -133,7 +138,6 @@ if submit_button:
                     if not item_link:
                         continue
 
-                    # 만약 단열재 검색인데 엉뚱한 법이 걸리면 건너뜁니다 (이중 안전장치)
                     if any(kw in search_keyword for kw in ["단열", "두께", "단열재"]) and "에너지절약설계기준" not in item_name:
                         continue
 
@@ -154,7 +158,6 @@ if submit_button:
                     found_articles = []
                     byeonpyo_matches = []
 
-                    # 조문 검색 (단열재 검색 시에는 조문보다 별표가 핵심이므로 조문 노이즈 최소화)
                     if not any(kw in search_keyword for kw in ["단열", "두께", "단열재"]):
                         for jo in jo_list:
                             jo_no = str(jo.get("joNo") or jo.get("조문번호") or "")
@@ -169,11 +172,9 @@ if submit_button:
                                     "content": jo_content
                                 })
 
-                    # 별표(첨부문서) 정밀 검사
                     for byl in byl_list:
                         title = str(byl.get("bylSj") or byl.get("별표제목") or byl.get("별표명") or "")
                         
-                        # 별표 제목에 '단열재' 또는 '두께'가 포함된 경우 최우선 매칭
                         if any(tok in title for tok in ["단열재", "두께"]) or all(tok in title for tok in clean_tokens):
                             pdf_path = byl.get("bylPdfLink") or byl.get("별표서식PDF파일링크") or ""
                             hwp_path = byl.get("bylHwpLink") or byl.get("별표서식파일링크") or ""
