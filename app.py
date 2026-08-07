@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 import re
-import os  # 👈 [추가] 환경변수를 읽어오기 위한 파이썬 기본 라이브러리
+import os
 
 # ==========================================
 # 1. 페이지 기본 설정 및 헤더
@@ -12,18 +12,15 @@ st.set_page_config(page_title="AI 건축 법령 검토 툴", page_icon="🏗️"
 st.title("🏗️ 건축 법령 및 지자체 조례 통합 검토 툴")
 st.caption("주소와 검토 키워드를 입력하면 관련 국가 법령 및 지자체 조례의 조문을 검색해 드립니다.")
 
-# 👈 [수정] 구글 클라우드 환경변수(OC_KEY)에서 키를 먼저 불러오고, 없으면 'test'를 사용합니다.
+# 구글 클라우드 환경변수(OC_KEY) 불러오기
 default_oc_key = os.getenv("OC_KEY", "test")
 
-# 법제처 Open API 사용자 키 (OC 값) 입력 창
-# 환경변수에 등록한 실제 키가 자동으로 채워지며, 필요시 화면에서 수정할 수도 있습니다.
 api_oc = st.sidebar.text_input(
     "법제처 API OC(사용자ID) 입력", 
     value=default_oc_key, 
-    help="구글 클라우드 환경변수(OC_KEY)가 설정되어 있으면 자동으로 입력됩니다."
+    help="법제처 국가법령정보 공동활용 사이트 가입 ID(OC)를 입력하세요."
 )
 
-# 검색 대상 법령 목록 정의
 TARGET_NATIONAL_LAWS = [
     "국토의 계획 및 이용에 관한 법률",
     "국토의 계획 및 이용에 관한 법률 시행령",
@@ -34,13 +31,17 @@ TARGET_NATIONAL_LAWS = [
 ]
 
 # ==========================================
-# 2. 검색어 분석 함수 (지역명 & 키워드 분리)
+# 2. 검색어 분석 함수 (지역명 & 키워드 분리 보완)
 # ==========================================
 def parse_user_input(user_text):
-    sido_match = re.search(r'(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원특별자치도|충청북도|충청남도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)', user_text)
+    # 시/도 추출
+    sido_pattern = r'(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원특별자치도|충청북도|충청남도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)'
+    sido_match = re.search(sido_pattern, user_text)
     sido = sido_match.group(0) if sido_match else ""
     
-    sugg_match = re.search(r'([가-힣]+시|[가-힣]+군|[가-힣]+구)', user_text)
+    # 시/도 부분을 제거한 뒤 시/군/구 추출 (인천광역시가 시/군/구로 중복 인식되는 현상 방지)
+    remaining_text = re.sub(sido_pattern, '', user_text) if sido else user_text
+    sugg_match = re.search(r'([가-힣]+시|[가-힣]+군|[가-힣]+구)', remaining_text)
     sugg = sugg_match.group(0) if sugg_match else ""
 
     keywords = ["건폐율", "용적률", "높이제한", "일조권", "주차장", "에너지절약", "용도지역", "조경", "대지안의 공지"]
@@ -51,30 +52,44 @@ def parse_user_input(user_text):
     return sido, sugg, keyword
 
 # ==========================================
-# 3. 법제처 API 연동 함수
+# 3. 법제처 API 연동 함수 (차단 회피 및 에러 로깅 강화)
 # ==========================================
 def search_law_articles(oc, target_type, query_name, keyword):
     results = []
-    search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={target_type}&type=XML&query={query_name}"
+    # 차단 회피를 위한 브라우저 User-Agent 설정
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    # HTTPS 보안 프로토콜 적용
+    search_url = f"https://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={target_type}&type=XML&query={query_name}"
     
     try:
-        response = requests.get(search_url, timeout=5)
+        response = requests.get(search_url, headers=headers, timeout=7)
         if response.status_code != 200:
-            return results
+            return results, f"HTTP 에러 코드: {response.status_code}"
         
+        # XML 파싱
         root = ET.fromstring(response.content)
+        
+        # 법제처 API 자체 에러 메시지 검사
+        errMsg = root.findtext('result/errMsg') or root.findtext('errMsg')
+        if errMsg and "정상" not in errMsg:
+            return results, f"법제처 API 응답 오류: {errMsg}"
+
         item_node = root.find('.//law') if target_type == 'law' else root.find('.//ordin')
         if item_node is None:
-            return results
+            return results, None
         
         mst = item_node.findtext('법령일련번호') if target_type == 'law' else item_node.findtext('자치법규일련번호')
         law_title = item_node.findtext('법령명한글') if target_type == 'law' else item_node.findtext('자치법규명')
         
         if not mst:
-            return results
+            return results, None
             
-        service_url = f"http://www.law.go.kr/DRF/lawService.do?OC={oc}&target={target_type}&MST={mst}&type=XML"
-        detail_resp = requests.get(service_url, timeout=5)
+        # 상세 조문 수신
+        service_url = f"https://www.law.go.kr/DRF/lawService.do?OC={oc}&target={target_type}&MST={mst}&type=XML"
+        detail_resp = requests.get(service_url, headers=headers, timeout=7)
         
         if detail_resp.status_code == 200:
             detail_root = ET.fromstring(detail_resp.content)
@@ -98,11 +113,10 @@ def search_law_articles(oc, target_type, query_name, keyword):
                         "article_title": jo_title,
                         "content": full_text
                     })
+        return results, None
                     
-    except Exception:
-        pass
-        
-    return results
+    except Exception as e:
+        return results, f"통신/파싱 예외 발생: {str(e)}"
 
 # ==========================================
 # 4. 사용자 대화창(UI) 구성
@@ -128,20 +142,33 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
 
         with st.spinner("법제처 API에서 관련 국가 법령 및 자치법규(조례) 조문을 검색 중입니다..."):
             all_results = []
+            error_logs = []
             
+            # 지자체 조례 검색
             if sido:
                 local_ordinance_names = [f"{sido} 도시계획조례", f"{sido} 건축조례"]
-                if sugg:
+                if sugg and sugg != sido:
                     local_ordinance_names.append(f"{sugg} 도시계획조례")
                     local_ordinance_names.append(f"{sugg} 건축조례")
                 
                 for ordin_name in local_ordinance_names:
-                    res = search_law_articles(api_oc, "ordin", ordin_name, keyword)
+                    res, err = search_law_articles(api_oc, "ordin", ordin_name, keyword)
+                    if err:
+                        error_logs.append(f"[{ordin_name}] {err}")
                     all_results.extend(res)
 
+            # 국가 주요 건축 법령 검색
             for law_name in TARGET_NATIONAL_LAWS:
-                res = search_law_articles(api_oc, "law", law_name, keyword)
+                res, err = search_law_articles(api_oc, "law", law_name, keyword)
+                if err:
+                    error_logs.append(f"[{law_name}] {err}")
                 all_results.extend(res)
+
+        # 시스템 에러 로그 출력 (문제 발생 시 디버깅용)
+        if error_logs:
+            with st.expander("⚠️ API 통신 및 연동 상태 확인 (디버깅 정보)", expanded=False):
+                for err in set(error_logs):
+                    st.error(err)
 
         st.subheader(f"📋 '{keyword}' 관련 법령 및 조례 검색 결과 (총 {len(all_results)}건)")
         
@@ -153,7 +180,7 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
         else:
             st.info("💡 법제처 Open API 연동 결과가 없거나 API 키가 올바르지 않습니다. 아래는 시스템 예시 출력 화면입니다.")
             
-            st.success(f"**[예시 출력] {sido} 도시계획조례**")
+            st.success(f"**[예시 출력] {sido if sido else '인천광역시'} 도시계획조례**")
             with st.expander(f"📖 [{sido if sido else '인천광역시'} 도시계획조례] 제64조 (용도지역 안에서의 건폐율)", expanded=True):
                 st.write("""
                 **제64조(용도지역 안에서의 건폐율)** 
