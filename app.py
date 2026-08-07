@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import xml.etree.ElementTree as ET
 import re
+import os  # 👈 [추가] 환경변수를 읽어오기 위한 파이썬 기본 라이브러리
 
 # ==========================================
 # 1. 페이지 기본 설정 및 헤더
@@ -11,8 +12,16 @@ st.set_page_config(page_title="AI 건축 법령 검토 툴", page_icon="🏗️"
 st.title("🏗️ 건축 법령 및 지자체 조례 통합 검토 툴")
 st.caption("주소와 검토 키워드를 입력하면 관련 국가 법령 및 지자체 조례의 조문을 검색해 드립니다.")
 
+# 👈 [수정] 구글 클라우드 환경변수(OC_KEY)에서 키를 먼저 불러오고, 없으면 'test'를 사용합니다.
+default_oc_key = os.getenv("OC_KEY", "test")
+
 # 법제처 Open API 사용자 키 (OC 값) 입력 창
-api_oc = st.sidebar.text_input("법제처 API OC(사용자ID) 입력", value="test", help="국가법령정보센터에서 발급받은 OC 값을 입력하세요. (기본값: test)")
+# 환경변수에 등록한 실제 키가 자동으로 채워지며, 필요시 화면에서 수정할 수도 있습니다.
+api_oc = st.sidebar.text_input(
+    "법제처 API OC(사용자ID) 입력", 
+    value=default_oc_key, 
+    help="구글 클라우드 환경변수(OC_KEY)가 설정되어 있으면 자동으로 입력됩니다."
+)
 
 # 검색 대상 법령 목록 정의
 TARGET_NATIONAL_LAWS = [
@@ -28,9 +37,6 @@ TARGET_NATIONAL_LAWS = [
 # 2. 검색어 분석 함수 (지역명 & 키워드 분리)
 # ==========================================
 def parse_user_input(user_text):
-    """
-    사용자가 입력한 문장에서 지역명과 법률 검색 키워드를 추출합니다.
-    """
     sido_match = re.search(r'(서울특별시|부산광역시|대구광역시|인천광역시|광주광역시|대전광역시|울산광역시|세종특별자치시|경기도|강원특별자치도|충청북도|충청남도|전북특별자치도|전라남도|경상북도|경상남도|제주특별자치도)', user_text)
     sido = sido_match.group(0) if sido_match else ""
     
@@ -40,7 +46,6 @@ def parse_user_input(user_text):
     keywords = ["건폐율", "용적률", "높이제한", "일조권", "주차장", "에너지절약", "용도지역", "조경", "대지안의 공지"]
     found_keywords = [kw for kw in keywords if kw in user_text]
     
-    # ⚠️ 오타가 수정된 부분: found_keywords[0]
     keyword = found_keywords[0] if found_keywords else user_text.split()[-1]
     
     return sido, sugg, keyword
@@ -49,9 +54,6 @@ def parse_user_input(user_text):
 # 3. 법제처 API 연동 함수
 # ==========================================
 def search_law_articles(oc, target_type, query_name, keyword):
-    """
-    법제처 Open API를 호출하여 법령/조례를 검색하고 키워드가 포함된 조문을 가져옵니다.
-    """
     results = []
     search_url = f"http://www.law.go.kr/DRF/lawSearch.do?OC={oc}&target={target_type}&type=XML&query={query_name}"
     
@@ -149,7 +151,7 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
                     st.markdown(f"**조문 내용:**")
                     st.text(item['content'])
         else:
-            st.info("💡 법제처 Open API 연동 결과가 없거나 'test' 키 사용 중입니다. 아래는 시스템 예시 출력 화면입니다.")
+            st.info("💡 법제처 Open API 연동 결과가 없거나 API 키가 올바르지 않습니다. 아래는 시스템 예시 출력 화면입니다.")
             
             st.success(f"**[예시 출력] {sido} 도시계획조례**")
             with st.expander(f"📖 [{sido if sido else '인천광역시'} 도시계획조례] 제64조 (용도지역 안에서의 건폐율)", expanded=True):
@@ -162,5 +164,4 @@ if st.button("🔍 건축 법령 검토 시작", type="primary"):
                 4. 제2종일반주거지역 : 60퍼센트 이하
                 5. 제3종일반주거지역 : 50퍼센트 이하
                 ...
-                (법제처 정식 API OC 수신 시 해당 지자체의 실제 조례 조문이 실시간 출력됩니다.)
                 """)
