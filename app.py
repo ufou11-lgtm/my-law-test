@@ -5,8 +5,7 @@ import re
 
 def load_api_key():
     key = os.environ.get("OC_KEY")
-    if key:
-        return key
+    if key: return key
     try:
         return st.secrets["OC_KEY"]
     except Exception:
@@ -15,211 +14,184 @@ def load_api_key():
 API_KEY = load_api_key()
 if not API_KEY:
     st.error(
-        "API 키가 설정되지 않았습니다.\n\n"
-        "- Cloud Run이라면: 서비스 설정 > 변수 및 보안 비밀 > 환경 변수에 OC_KEY를 추가해주세요.\n"
-        "- 로컬이라면: .streamlit/secrets.toml 에 OC_KEY 값을 등록해주세요."
+        "🚨 API 키가 설정되지 않았습니다.\n\n"
+        "- Cloud Run: 서비스 설정 > 변수 및 보안 비밀 > 환경 변수에 OC_KEY 추가\n"
+        "- 로컬: .streamlit/secrets.toml 에 OC_KEY 추가"
     )
     st.stop()
 
 REQUEST_TIMEOUT = 10
 
-st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️")
+st.set_page_config(page_title="스마트 법규 검토 시스템", page_icon="⚖️", layout="wide")
 st.title("⚖️ 스마트 법규 검토 시스템 (실무형 통합 검색)")
-st.markdown("건축 용어(건폐율, 단열재, 주차장 등)를 입력하면, 알아서 관련 법령과 행정규칙을 찾아 **조문 내용과 별표**를 보여줍니다.")
+st.markdown("건축 용어(**건폐율, 단열재, 주차장** 등)를 입력하면, 관련된 법령/행정규칙의 **조문과 별표**를 자동으로 찾아줍니다.")
 
-search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 건폐율, 단열재의 두께, 주차장)")
+# 💡 [핵심 포인트 1] 사용자의 검색어를 실제 '법령명'으로 연결해주는 사전(Dictionary) 구성
+KEYWORD_TO_LAW_MAP = {
+    "단열": ["건축물의 에너지절약설계기준", "건축법 시행령"],
+    "건폐": ["건축법", "국토의 계획 및 이용에 관한 법률"],
+    "용적": ["건축법", "국토의 계획 및 이용에 관한 법률"],
+    "주차": ["주차장법", "주차장법 시행규칙"],
+    "피난": ["건축물의 피난ㆍ방화구조 등의 기준에 관한 규칙"]
+}
+
+search_keyword = st.text_input("검색할 키워드를 입력하세요 (예: 단열재 두께, 건폐율 확인)")
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def search_list(keyword: str, target_code: str):
+def search_list(law_name: str, target_code: str):
+    """주어진 법령명으로 API를 호출하여 법령 일련번호를 가져옵니다."""
     url = "https://www.law.go.kr/DRF/lawSearch.do"
-    params = {
-        "OC": API_KEY,
-        "target": target_code,
-        "type": "JSON",
-        "query": keyword,
-    }
+    params = {"OC": API_KEY, "target": target_code, "type": "JSON", "query": law_name}
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
     return resp.json()
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_detail(item_id: str, target_code: str, link_url: str = ""):
+def fetch_detail(item_id: str, target_code: str):
+    """법령 일련번호로 전체 조문 및 별표 데이터를 가져옵니다."""
     url = "https://www.law.go.kr/DRF/lawService.do"
-    params = {
-        "OC": API_KEY,
-        "target": target_code,
-        "type": "JSON",
-        "ID": item_id,
-    }
+    params = {"OC": API_KEY, "target": target_code, "type": "JSON", "ID": item_id}
     resp = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
-    data = resp.json()
-    
-    root_key = "Law" if target_code == "law" else "Admrul"
-    if root_key in data and isinstance(data[root_key], str) and "일치하는 법령이 없습니다" in data[root_key]:
-        if link_url:
-            match = re.search(r'MST=(\d+)', link_url)
-            if match:
-                mst_val = match.group(1)
-                params["ID"] = mst_val
-                resp2 = requests.get(url, params=params, timeout=REQUEST_TIMEOUT)
-                resp2.raise_for_status()
-                return resp2.json()
-                
+    return resp.json()
+
+def ensure_list(data):
+    """데이터가 딕셔너리면 리스트로 감싸고, 리스트면 그대로 반환하는 헬퍼 함수"""
+    if not data: return []
+    if isinstance(data, dict): return [data]
     return data
 
 def find_byeonpyo(detail_root: dict, keyword: str):
-    byeonpyo_candidates = ["별표단위", "별표서식", "별표", "byeonpyo"]
-    byeonpyo_list = None
-    for key in byeonpyo_candidates:
-        if key in detail_root:
-            byeonpyo_list = detail_root[key]
-            break
+    """법령 상세 데이터에서 검색어가 포함된 별표(Byl)를 찾습니다."""
+    # API에서 별표는 'Byl' 키 아래에 존재합니다.
+    byl_data = detail_root.get("Byl", [])
+    byl_list = ensure_list(byl_data)
 
-    if not byeonpyo_list:
-        return []
-
-    if isinstance(byeonpyo_list, dict):
-        byeonpyo_list = [byeonpyo_list]
-
-    clean_keyword = keyword.replace("의", "").replace(" ", "")
-    tokens = [tok for tok in keyword.split() if len(tok) >= 2]
-
+    clean_keyword = keyword.replace(" ", "")
     results = []
-    for item in byeonpyo_list:
-        title = (
-            item.get("별표명")
-            or item.get("별표제목")
-            or item.get("별표서식명")
-            or ""
-        )
+
+    for item in byl_list:
+        # OpenAPI는 영문 약어 키(bylSj, bylPdfLink 등)를 주로 사용합니다.
+        title = item.get("bylSj", "") or item.get("별표제목", "")
         if not title:
             continue
-
+            
         title_no_space = title.replace(" ", "")
-        if keyword in title or clean_keyword in title_no_space or any(tok in title for tok in tokens):
-            pdf_path = item.get("별표서식PDF파일링크")
-            hwp_path = item.get("별표서식파일링크")
+        
+        # 별표 제목에 키워드가 포함되어 있는지 확인
+        if any(char in title_no_space for char in clean_keyword.split()):
+            pdf_path = item.get("bylPdfLink", "") or item.get("bylPdfUrl", "")
+            hwp_path = item.get("bylHwpLink", "") or item.get("bylHwpUrl", "")
+            
             results.append({
                 "title": title,
                 "pdf_url": f"https://www.law.go.kr{pdf_path}" if pdf_path else None,
                 "hwp_url": f"https://www.law.go.kr{hwp_path}" if hwp_path else None,
             })
-
     return results
 
-if st.button("법령 및 별표 통합 검색하기"):
+if st.button("🔍 법령 및 별표 통합 검색하기"):
     if not search_keyword:
         st.warning("검색어를 먼저 입력해주세요!")
     else:
         targets = [
             {"code": "law", "label": "법령", "detail_key": "Law"},
-            {"code": "admrul", "label": "행정규칙 (고시/지침)", "detail_key": "Admrul"},
+            {"code": "admrul", "label": "행정규칙", "detail_key": "Admrul"},
         ]
+
+        # 💡 [핵심 포인트 2] 검색어를 분석하여 조회할 '실제 법령명' 리스트 추출
+        laws_to_search = set()
+        for key, laws in KEYWORD_TO_LAW_MAP.items():
+            if key in search_keyword:
+                laws_to_search.update(laws)
+        
+        # 매핑된 법령이 없으면 기본적으로 건축법 검색
+        if not laws_to_search:
+            laws_to_search.add("건축법")
 
         total_found_count = 0
 
-        # 💡 [핵심 해결책] API가 법 이름을 검색해야 하므로, 사용자가 입력한 용어에 맞춰 핵심 법령명을 자동으로 매핑합니다!
-        search_queries = [search_keyword]
-        
-        # 건축 실무 주요 키워드 자동 매핑
-        if "건폐율" in search_keyword or "용적률" in search_keyword:
-            search_queries.extend(["건축법", "국토의 계획 및 이용에 관한 법률"])
-        elif "단열재" in search_keyword:
-            search_queries.extend(["건축물의 에너지절약설계기준", "건축법 시행령"])
-        elif "주차장" in search_keyword:
-            search_queries.extend(["주차장법", "주차장법 시행규칙"])
-        else:
-            # 일반적인 경우 건축법을 기본으로 함께 검색
-            search_queries.extend(["건축법"])
-
-        with st.spinner(f"'{search_keyword}' 관련 법 조문과 별표를 분석 중입니다..."):
+        with st.spinner(f"'{search_keyword}' 관련 법령(문서)을 분석 중입니다..."):
             for t in targets:
-                collected_items = {}
-                
-                for q in search_queries:
+                for law_name in laws_to_search:
                     try:
-                        data = search_list(q, t["code"])
-                    except Exception:
+                        list_data = search_list(law_name, t["code"])
+                    except Exception as e:
                         continue
 
-                    items = []
-                    if "LawSearch" in data:
-                        if "law" in data["LawSearch"]:
-                            items = data["LawSearch"]["law"]
-                        elif "admrul" in data["LawSearch"]:
-                            items = data["LawSearch"]["admrul"]
+                    # 검색된 법령 리스트 추출
+                    search_root = list_data.get("LawSearch", {})
+                    items = ensure_list(search_root.get("law", search_root.get("admrul", [])))
 
-                    for itm in items:
-                        iid = itm.get("법령일련번호") or itm.get("행정규칙일련번호")
-                        if iid:
-                            collected_items[iid] = itm
+                    for item in items:
+                        item_id = item.get("법령일련번호") or item.get("행정규칙일련번호")
+                        item_name = item.get("법령명한글") or item.get("행정규칙명")
+                        item_link = item.get("법령상세링크") or item.get("행정규칙상세링크")
 
-                if not collected_items:
-                    continue
+                        if not item_id:
+                            continue
 
-                for item_id, item in list(collected_items.items())[:10]:
-                    item_name = item.get("법령명한글") or item.get("행정규칙명") or "이름 없음"
-                    item_link = item.get("법령상세링크") or item.get("행정규칙상세링크") or ""
+                        try:
+                            detail_data = fetch_detail(item_id, t["code"])
+                        except Exception:
+                            continue
+                        
+                        detail_root = detail_data.get(t["detail_key"], {})
+                        if not isinstance(detail_root, dict):
+                            continue
 
-                    try:
-                        detail_data = fetch_detail(item_id, t["code"], item_link)
-                    except Exception:
-                        continue
-
-                    detail_root = detail_data.get(t["detail_key"], {})
-                    if isinstance(detail_root, str):
-                        continue
-
-                    found_articles = []
-                    if "Jo" in detail_root:
-                        jo_list = detail_root["Jo"]
-                        if isinstance(jo_list, dict):
-                            jo_list = [jo_list]
-
+                        # 1. 조문(Jo) 검색
+                        jo_list = ensure_list(detail_root.get("Jo", []))
+                        found_articles = []
+                        
+                        # 입력어(예: 단열재 두께)를 공백 기준으로 나누어 모두 포함하는지 확인
+                        search_tokens = search_keyword.split() 
+                        
                         for jo in jo_list:
                             jo_content = jo.get("joCntt", "")
-                            jo_no = jo.get("조문번호", "")
-                            jo_title = jo.get("조문제목", "")
+                            jo_no = jo.get("조문번호", "") or jo.get("joNo", "")
+                            jo_title = jo.get("조문제목", "") or jo.get("joSj", "")
                             
-                            # 사용자가 입력한 핵심 단어가 조문 내용이나 제목에 포함된 경우 추출
-                            # (예: '건폐율' 입력 시 건폐율이 포함된 조문만 쏙쏙 골라냄)
-                            main_word = search_keyword.split()[0] # 첫 단어 기준 (예: 단열재의 두께 -> 단열재)
-                            if main_word in jo_content or main_word in jo_title or search_keyword in jo_content:
+                            # 모든 검색어 토큰이 조문 내용이나 제목에 포함되어 있는지 확인
+                            if all(token in jo_content or token in jo_title for token in search_tokens):
                                 found_articles.append({
                                     "no": jo_no,
                                     "title": jo_title,
                                     "content": jo_content
                                 })
 
-                    byeonpyo_matches = find_byeonpyo(detail_root, search_keyword)
+                        # 2. 별표(Byl) 검색
+                        byeonpyo_matches = find_byeonpyo(detail_root, search_keyword)
 
-                    if found_articles or byeonpyo_matches:
-                        total_found_count += 1
-                        with st.expander(f"📌 [{t['label']}] {item_name}", expanded=True):
-                            
-                            if found_articles:
-                                st.markdown("**📜 관련 법 조문**")
-                                for art in found_articles[:3]:
-                                    st.markdown(f"**제{art['no']}조({art['title']})**")
-                                    highlighted = art['content'].replace(search_keyword, f"**{search_keyword}**")
-                                    st.markdown(f"> {highlighted}")
-                                    st.markdown("---")
+                        # 조문이나 별표 중 하나라도 발견되면 화면에 출력
+                        if found_articles or byeonpyo_matches:
+                            total_found_count += 1
+                            with st.expander(f"📌 [{t['label']}] {item_name}", expanded=True):
+                                
+                                if found_articles:
+                                    st.markdown("### 📜 관련 법 조문")
+                                    for art in found_articles[:5]: # 최대 5개까지만 표시
+                                        st.markdown(f"**제{art['no']}조({art['title']})**")
+                                        # 검색어 하이라이팅 (간단한 버전)
+                                        highlighted = art['content']
+                                        for token in search_tokens:
+                                            highlighted = highlighted.replace(token, f"**<span style='color:red'>{token}</span>**")
+                                        st.markdown(f"> {highlighted}", unsafe_allow_html=True)
+                                        st.divider()
 
-                            if byeonpyo_matches:
-                                st.markdown("**📎 관련 별표(첨부표)**")
-                                for bp in byeonpyo_matches:
-                                    file_url = bp["pdf_url"] or bp["hwp_url"]
-                                    file_type = "PDF" if bp["pdf_url"] else "HWP"
-                                    if file_url:
-                                        st.markdown(f"- **{bp['title']}** — [{file_type} 다운로드 파일 바로가기]({file_url})")
-                                    else:
-                                        st.markdown(f"- **{bp['title']}** (파일 링크 없음)")
-
-                            full_link = f"https://www.law.go.kr{item_link}" if item_link else "https://www.law.go.kr"
-                            st.markdown(f"[➡️ 국가법령정보센터 원문 전체 페이지 보기]({full_link})")
+                                if byeonpyo_matches:
+                                    st.markdown("### 📎 관련 별표(첨부표)")
+                                    for bp in byeonpyo_matches:
+                                        file_url = bp["pdf_url"] or bp["hwp_url"]
+                                        if file_url:
+                                            st.markdown(f"- **{bp['title']}** 🔗 [[파일 다운로드]]({file_url})")
+                                        else:
+                                            st.markdown(f"- **{bp['title']}** (파일 링크 없음)")
+                                
+                                full_link = f"https://www.law.go.kr{item_link}" if item_link else "https://www.law.go.kr"
+                                st.markdown(f"[➡️ 국가법령정보센터 원문 전체 페이지 보기]({full_link})")
 
         if total_found_count == 0:
-            st.info(f"'{search_keyword}'과(와) 일치하는 조문이나 별표를 찾지 못했습니다. 단어를 조금 더 단순하게(예: '건폐율', '단열재') 입력해 보세요.")
+            st.info(f"'{search_keyword}' 관련 조문이나 별표를 찾지 못했습니다. 키워드를 '단열', '건폐율' 등으로 짧게 입력해 보세요.")
         else:
             st.success(f"✅ 총 {total_found_count}개의 관련 문서를 찾아냈습니다!")
